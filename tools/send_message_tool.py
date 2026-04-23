@@ -1016,7 +1016,7 @@ async def _send_wechat(extra, chat_id, message):
             async with session.post(
                 f"http://{bridge_host}:{bridge_port}/send",
                 headers=headers,
-                json={"chatId": chat_id, "text": message},
+                json={"chatId": chat_id, "message": message},
                 timeout=aiohttp.ClientTimeout(total=30),
             ) as resp:
                 if resp.status == 200:

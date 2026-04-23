@@ -47,7 +47,7 @@ def test_send_text_happy_path():
     assert result.success is True
     assert result.message_id == "msg-1"
     payload = adapter._http_session.post.call_args.kwargs["json"]
-    assert payload == {"chatId": "wxid_123", "text": "hello from hermes"}
+    assert payload == {"chatId": "wxid_123", "message": "hello from hermes"}
 
 
 def test_send_401_logs_clear_error_without_retry(caplog):
@@ -149,6 +149,43 @@ def test_get_chat_history_returns_list_payload():
     result = asyncio.run(adapter.get_chat_history("wxid_123", limit=2))
 
     assert result == history
+
+
+def test_get_chat_history_accepts_wrapped_list_payload():
+    adapter = _make_adapter()
+
+    history = [{"messageId": "m1", "body": "hello"}]
+    resp = MagicMock(status=200)
+    resp.json = AsyncMock(return_value={"data": history})
+    adapter._http_session.get = MagicMock(return_value=_AsyncCM(resp))
+
+    result = asyncio.run(adapter.get_chat_history("wxid_123", limit=1))
+
+    assert result == history
+
+
+def test_consume_sse_response_accepts_list_payloads():
+    adapter = _make_adapter()
+    adapter.handle_message = AsyncMock()
+    adapter._running = True
+
+    payload = (
+        'data: [{"messageId":"mid-1","chatId":"filehelper","senderId":"wxid_sender",'
+        '"senderName":"Alice","chatName":"File Helper","isGroup":false,"body":"hello",'
+        '"hasMedia":false,"mediaType":"","mediaUrls":[],"mentionedIds":[],'
+        '"quotedParticipant":null,"botIds":[],"timestamp":1713859200}]\n'
+    ).encode()
+
+    class _Content:
+        async def iter_chunked(self, _size):
+            yield payload
+
+    response = MagicMock()
+    response.content = _Content()
+
+    asyncio.run(adapter._consume_sse_response(response))
+
+    adapter.handle_message.assert_awaited_once()
 
 
 def test_connect_releases_bridge_lock_on_failed_startup():

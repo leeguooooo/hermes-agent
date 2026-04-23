@@ -167,7 +167,7 @@ class WeChatAdapter(BasePlatformAdapter):
         for chunk in self.truncate_message(content, self.MAX_MESSAGE_LENGTH):
             payload = {
                 "chatId": chat_id,
-                "text": chunk,
+                "message": chunk,
             }
             status, data = await self._request_json(
                 "POST",
@@ -247,8 +247,11 @@ class WeChatAdapter(BasePlatformAdapter):
             f"/chat/{quote(str(chat_id), safe='')}/history?{query}",
             timeout=15,
         )
-        if status == 200 and isinstance(data, list):
-            return data
+        if status == 200:
+            if isinstance(data, list):
+                return data
+            if isinstance(data, dict) and isinstance(data.get("data"), list):
+                return data["data"]
         return []
 
     async def _health_monitor(self) -> None:
@@ -393,7 +396,11 @@ class WeChatAdapter(BasePlatformAdapter):
                 except json.JSONDecodeError:
                     logger.debug("[%s] Invalid WeChat SSE payload: %s", self.name, payload[:200])
                     continue
-                await self._handle_stream_payload(data)
+                if isinstance(data, list):
+                    for item in data:
+                        await self._handle_stream_payload(item)
+                else:
+                    await self._handle_stream_payload(data)
 
     async def _handle_stream_payload(self, data: Dict[str, Any]) -> None:
         """Translate one bridge payload into a Hermes `MessageEvent`."""
