@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import types
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -132,3 +133,41 @@ def test_sse_event_translates_to_message_event():
     assert event.source.chat_id == "wxid_group@chatroom"
     assert event.source.user_id == "wxid_sender"
     assert event.source.chat_type == "group"
+
+
+def test_get_chat_history_returns_list_payload():
+    adapter = _make_adapter()
+
+    history = [
+        {"messageId": "m1", "body": "hello"},
+        {"messageId": "m2", "body": "world"},
+    ]
+    resp = MagicMock(status=200)
+    resp.json = AsyncMock(return_value=history)
+    adapter._http_session.get = MagicMock(return_value=_AsyncCM(resp))
+
+    result = asyncio.run(adapter.get_chat_history("wxid_123", limit=2))
+
+    assert result == history
+
+
+def test_connect_releases_bridge_lock_on_failed_startup():
+    from gateway.platforms.wechat import WeChatAdapter
+
+    adapter = WeChatAdapter(PlatformConfig(enabled=True))
+
+    session = MagicMock()
+    session.closed = False
+    session.close = AsyncMock()
+    fake_aiohttp = types.SimpleNamespace(ClientSession=MagicMock(return_value=session))
+
+    with patch("gateway.platforms.wechat.check_wechat_requirements", return_value=True), \
+         patch.dict("sys.modules", {"aiohttp": fake_aiohttp}), \
+         patch.object(adapter, "_acquire_platform_lock", return_value=True) as acquire_lock, \
+         patch.object(adapter, "_release_platform_lock") as release_lock, \
+         patch.object(adapter, "_check_health_once", new=AsyncMock(return_value=False)):
+        ok = asyncio.run(adapter.connect())
+
+    assert ok is False
+    acquire_lock.assert_called_once()
+    release_lock.assert_called_once()

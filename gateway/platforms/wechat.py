@@ -81,30 +81,44 @@ class WeChatAdapter(BasePlatformAdapter):
 
         import aiohttp
 
-        if self._http_session and not self._http_session.closed:
-            await self._http_session.close()
+        lock_acquired = False
+        started = False
+        try:
+            if not self._acquire_platform_lock("wechat-bridge", self._base_url, "WeChat bridge"):
+                return False
+            lock_acquired = True
+        except Exception as exc:
+            logger.warning("[%s] Could not acquire bridge lock (non-fatal): %s", self.name, exc)
 
-        self._http_session = aiohttp.ClientSession()
-        self._running = True
-
-        health_ok = await self._check_health_once()
-        if self.has_fatal_error:
+        try:
             if self._http_session and not self._http_session.closed:
                 await self._http_session.close()
-            self._http_session = None
-            return False
 
-        if not health_ok and self._last_health_status is None:
-            logger.warning("[%s] WeChat bridge is unreachable at startup", self.name)
-            self._running = False
-            if self._http_session and not self._http_session.closed:
-                await self._http_session.close()
-            self._http_session = None
-            return False
+            self._http_session = aiohttp.ClientSession()
+            self._running = True
 
-        self._stream_task = asyncio.create_task(self._stream_messages(), name="wechat-stream")
-        self._health_task = asyncio.create_task(self._health_monitor(), name="wechat-health")
-        return True
+            health_ok = await self._check_health_once()
+            if self.has_fatal_error:
+                if self._http_session and not self._http_session.closed:
+                    await self._http_session.close()
+                self._http_session = None
+                return False
+
+            if not health_ok and self._last_health_status is None:
+                logger.warning("[%s] WeChat bridge is unreachable at startup", self.name)
+                self._running = False
+                if self._http_session and not self._http_session.closed:
+                    await self._http_session.close()
+                self._http_session = None
+                return False
+
+            self._stream_task = asyncio.create_task(self._stream_messages(), name="wechat-stream")
+            self._health_task = asyncio.create_task(self._health_monitor(), name="wechat-health")
+            started = True
+            return True
+        finally:
+            if not started and lock_acquired:
+                self._release_platform_lock()
 
     async def disconnect(self) -> None:
         """Stop background tasks and close the HTTP session."""
@@ -132,6 +146,7 @@ class WeChatAdapter(BasePlatformAdapter):
             await self._http_session.close()
         self._http_session = None
 
+        self._release_platform_lock()
         self._mark_disconnected()
 
     async def send(
@@ -454,8 +469,8 @@ class WeChatAdapter(BasePlatformAdapter):
         json_body: Optional[Dict[str, Any]] = None,
         timeout: int = 30,
         retry_on_503: bool = False,
-    ) -> tuple[int, Dict[str, Any]]:
-        """Issue a bridge request and coerce the response into JSON-like dicts."""
+    ) -> tuple[int, Any]:
+        """Issue a bridge request and preserve dict/list JSON payloads."""
         if not self._http_session:
             return 0, {"message": "HTTP session not initialized"}
 
@@ -493,14 +508,12 @@ class WeChatAdapter(BasePlatformAdapter):
                     continue
                 return response.status, payload
 
-    async def _coerce_json_payload(self, response) -> Dict[str, Any]:
-        """Decode a bridge response into a dict."""
+    async def _coerce_json_payload(self, response) -> Any:
+        """Decode a bridge response into dict/list/scalar JSON data."""
         if hasattr(response, "json"):
             try:
                 data = await response.json()
-                if isinstance(data, dict):
-                    return data
-                return {"data": data}
+                return data
             except Exception:
                 pass
 
@@ -513,9 +526,7 @@ class WeChatAdapter(BasePlatformAdapter):
             data = json.loads(text)
         except json.JSONDecodeError:
             return {"message": text}
-        if isinstance(data, dict):
-            return data
-        return {"data": data}
+        return data
 
     @staticmethod
     def _client_timeout(total: int):
