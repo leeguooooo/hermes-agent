@@ -444,6 +444,13 @@ def test_first_install_nous_auto_configures_managed_defaults(monkeypatch):
 class TestPlatformToolsetConsistency:
     """Every platform in tools_config.PLATFORMS must have a matching toolset."""
 
+    def test_wechat_platform_entry_exists(self):
+        """WeChat must be registered so live gateway sessions resolve toolsets."""
+        from hermes_cli.tools_config import PLATFORMS
+
+        assert "wechat" in PLATFORMS
+        assert PLATFORMS["wechat"]["default_toolset"] == "hermes-wechat"
+
     def test_all_platforms_have_toolset_definitions(self):
         """Each platform's default_toolset must exist in TOOLSETS."""
         from hermes_cli.tools_config import PLATFORMS
