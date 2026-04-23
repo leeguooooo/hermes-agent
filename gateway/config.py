@@ -51,6 +51,7 @@ class Platform(Enum):
     TELEGRAM = "telegram"
     DISCORD = "discord"
     WHATSAPP = "whatsapp"
+    WECHAT = "wechat"
     SLACK = "slack"
     SIGNAL = "signal"
     MATTERMOST = "mattermost"
@@ -188,6 +189,40 @@ class PlatformConfig:
 
 
 @dataclass
+class WeChatConfig:
+    """Environment-driven settings for the local WeChat bridge."""
+
+    enabled: bool = False
+    host: str = "127.0.0.1"
+    port: int = 18400
+    bearer: Optional[str] = None
+    allowed_users: Optional[str] = None
+    allow_all_users: bool = False
+    home_channel: Optional[str] = None
+    home_channel_name: str = "Home"
+
+    def to_platform_config(self) -> PlatformConfig:
+        config = PlatformConfig(enabled=self.enabled)
+        config.extra.update({
+            "bridge_host": self.host,
+            "bridge_port": self.port,
+        })
+        if self.bearer:
+            config.extra["bridge_bearer"] = self.bearer
+        if self.allowed_users:
+            config.extra["allow_from"] = self.allowed_users
+        if self.allow_all_users:
+            config.extra["allow_all_users"] = True
+        if self.home_channel:
+            config.home_channel = HomeChannel(
+                platform=Platform.WECHAT,
+                chat_id=self.home_channel,
+                name=self.home_channel_name or "Home",
+            )
+        return config
+
+
+@dataclass
 class StreamingConfig:
     """Configuration for real-time token streaming to messaging platforms."""
     enabled: bool = False
@@ -281,6 +316,9 @@ class GatewayConfig:
                 connected.append(platform)
             # WhatsApp uses enabled flag only (bridge handles auth)
             elif platform == Platform.WHATSAPP:
+                connected.append(platform)
+            # WeChat uses enabled flag only (local bridge handles auth)
+            elif platform == Platform.WECHAT:
                 connected.append(platform)
             # Signal uses extra dict for config (http_url + account)
             elif platform == Platform.SIGNAL and config.extra.get("http_url"):
@@ -724,6 +762,26 @@ def load_gateway_config() -> GatewayConfig:
                         gaf = ",".join(str(v) for v in gaf)
                     os.environ["WHATSAPP_GROUP_ALLOWED_USERS"] = str(gaf)
 
+            wechat_cfg = yaml_cfg.get("wechat", {})
+            if isinstance(wechat_cfg, dict):
+                if "bridge_host" in wechat_cfg and not os.getenv("WECHAT_BRIDGE_HOST"):
+                    os.environ["WECHAT_BRIDGE_HOST"] = str(wechat_cfg["bridge_host"]).strip()
+                if "bridge_port" in wechat_cfg and not os.getenv("WECHAT_BRIDGE_PORT"):
+                    os.environ["WECHAT_BRIDGE_PORT"] = str(wechat_cfg["bridge_port"]).strip()
+                if "bridge_bearer" in wechat_cfg and not os.getenv("WECHAT_BRIDGE_BEARER"):
+                    os.environ["WECHAT_BRIDGE_BEARER"] = str(wechat_cfg["bridge_bearer"]).strip()
+                allowed = wechat_cfg.get("allowed_users")
+                if allowed is not None and not os.getenv("WECHAT_ALLOWED_USERS"):
+                    if isinstance(allowed, list):
+                        allowed = ",".join(str(v) for v in allowed)
+                    os.environ["WECHAT_ALLOWED_USERS"] = str(allowed)
+                if "allow_all_users" in wechat_cfg and not os.getenv("WECHAT_ALLOW_ALL_USERS"):
+                    os.environ["WECHAT_ALLOW_ALL_USERS"] = str(wechat_cfg["allow_all_users"]).lower()
+                if "home_channel" in wechat_cfg and not os.getenv("WECHAT_HOME_CHANNEL"):
+                    os.environ["WECHAT_HOME_CHANNEL"] = str(wechat_cfg["home_channel"]).strip()
+                if "home_channel_name" in wechat_cfg and not os.getenv("WECHAT_HOME_CHANNEL_NAME"):
+                    os.environ["WECHAT_HOME_CHANNEL_NAME"] = str(wechat_cfg["home_channel_name"]).strip()
+
             # DingTalk settings → env vars (env vars take precedence)
             dingtalk_cfg = yaml_cfg.get("dingtalk", {})
             if isinstance(dingtalk_cfg, dict):
@@ -908,6 +966,41 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         if Platform.WHATSAPP not in config.platforms:
             config.platforms[Platform.WHATSAPP] = PlatformConfig()
         config.platforms[Platform.WHATSAPP].enabled = True
+
+    # WeChat (local bridge, no token auth)
+    wechat_enabled = os.getenv("WECHAT_ENABLED", "").lower() in ("true", "1", "yes")
+    wechat_home = os.getenv("WECHAT_HOME_CHANNEL", "").strip()
+    wechat_allowed_users = os.getenv("WECHAT_ALLOWED_USERS", "").strip()
+    wechat_allow_all_users = os.getenv("WECHAT_ALLOW_ALL_USERS", "").lower() in ("true", "1", "yes")
+    wechat_related_env = any(
+        (
+            wechat_enabled,
+            wechat_home,
+            wechat_allowed_users,
+            wechat_allow_all_users,
+            os.getenv("WECHAT_BRIDGE_BEARER", "").strip(),
+            os.getenv("WECHAT_BRIDGE_HOST", "").strip(),
+            os.getenv("WECHAT_BRIDGE_PORT", "").strip(),
+        )
+    )
+    if wechat_related_env:
+        wechat_cfg = WeChatConfig(
+            enabled=wechat_enabled,
+            host=os.getenv("WECHAT_BRIDGE_HOST", "127.0.0.1").strip() or "127.0.0.1",
+            port=int(os.getenv("WECHAT_BRIDGE_PORT", "18400")),
+            bearer=os.getenv("WECHAT_BRIDGE_BEARER", "").strip() or None,
+            allowed_users=wechat_allowed_users or None,
+            allow_all_users=wechat_allow_all_users,
+            home_channel=wechat_home or None,
+            home_channel_name=os.getenv("WECHAT_HOME_CHANNEL_NAME", "Home"),
+        )
+        base_wechat = config.platforms.get(Platform.WECHAT, PlatformConfig())
+        env_wechat = wechat_cfg.to_platform_config()
+        base_wechat.enabled = env_wechat.enabled or base_wechat.enabled
+        base_wechat.extra.update(env_wechat.extra)
+        if env_wechat.home_channel:
+            base_wechat.home_channel = env_wechat.home_channel
+        config.platforms[Platform.WECHAT] = base_wechat
     
     # Slack
     slack_token = os.getenv("SLACK_BOT_TOKEN")

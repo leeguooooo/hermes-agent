@@ -73,6 +73,9 @@ def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
                 platforms["discord"] = _build_discord(adapter)
             elif platform == Platform.SLACK:
                 platforms["slack"] = _build_slack(adapter)
+            elif platform in (Platform.WHATSAPP, Platform.WECHAT):
+                # Local bridge platforms currently rely on session-based discovery.
+                platforms[platform.value] = _build_from_sessions(platform.value)
         except Exception as e:
             logger.warning("Channel directory: failed to build %s: %s", platform.value, e)
 
