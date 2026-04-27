@@ -63,6 +63,21 @@ class WeChatAdapter(BasePlatformAdapter):
             or os.getenv("WECHAT_BRIDGE_BEARER", "")
         ).strip() or None
 
+        # Group gating: WeChat allowlists are scoped to the operator's wxid,
+        # so a whitelisted user posting unrelated chatter in a large group
+        # would otherwise wake the agent on every message. Treat group
+        # inbound as relevant only when the operator is explicitly @-tagged
+        # (`mentionedIds` contains `self_wxid`). DMs always bypass this gate.
+        # Disable by exporting WECHAT_REQUIRE_GROUP_MENTION=0.
+        self._self_wxid = (
+            str(extra.get("self_wxid") or os.getenv("WECHAT_SELF_WXID", "")).strip()
+            or None
+        )
+        self._require_mention_in_groups = (
+            os.getenv("WECHAT_REQUIRE_GROUP_MENTION", "1").strip()
+            not in ("0", "false", "False", "")
+        )
+
         self._base_url = f"http://{self._bridge_host}:{self._bridge_port}"
         self._http_session = None
         self._stream_task: Optional[asyncio.Task] = None
@@ -458,7 +473,21 @@ class WeChatAdapter(BasePlatformAdapter):
             else:
                 message_type = MessageType.DOCUMENT
 
-        chat_type = "group" if data.get("isGroup") else "dm"
+        is_group = bool(data.get("isGroup"))
+        chat_type = "group" if is_group else "dm"
+        if is_group and self._require_mention_in_groups and self._self_wxid:
+            mentioned_ids = {
+                str(mid).strip()
+                for mid in (data.get("mentionedIds") or [])
+                if str(mid).strip()
+            }
+            if self._self_wxid not in mentioned_ids:
+                logger.debug(
+                    "[%s] skip group msg (no @%s): chat=%s sender=%s body=%r",
+                    self.name, self._self_wxid, chat_id, sender_id,
+                    str(data.get("body") or "")[:60],
+                )
+                return None
         source = self.build_source(
             chat_id=chat_id,
             chat_name=data.get("chatName"),

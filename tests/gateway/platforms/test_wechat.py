@@ -208,3 +208,103 @@ def test_connect_releases_bridge_lock_on_failed_startup():
     assert ok is False
     acquire_lock.assert_called_once()
     release_lock.assert_called_once()
+
+
+def _make_inbound(**overrides):
+    """Build a minimal SSE-shaped payload that satisfies _build_message_event."""
+    base = {
+        "messageId": "mid-1",
+        "chatId": "10086@chatroom",
+        "senderId": "wxid_user1",
+        "senderName": "Alice",
+        "chatName": "design",
+        "isGroup": True,
+        "body": "hi",
+        "hasMedia": False,
+        "mediaType": "",
+        "mediaUrls": [],
+        "mentionedIds": [],
+        "quotedParticipant": "",
+        "botIds": [],
+        "fromSelf": False,
+        "timestamp": 1713859200,
+    }
+    base.update(overrides)
+    return base
+
+
+def test_build_event_drops_self_sent_dm_to_break_echo_loop():
+    """Bot's own outbound replies come back through SSE; without dropping
+    them the adapter would re-process its own text and reply again."""
+    adapter = _make_adapter(self_wxid="wxid_bot")
+    data = _make_inbound(
+        chatId="wxid_user1",
+        senderId="wxid_bot",
+        isGroup=False,
+        fromSelf=True,
+        body="bot's own reply",
+    )
+
+    assert adapter._build_message_event(data) is None
+
+
+def test_build_event_drops_group_message_when_bot_not_mentioned():
+    adapter = _make_adapter(self_wxid="wxid_bot")
+    data = _make_inbound(
+        senderId="wxid_user1",
+        isGroup=True,
+        mentionedIds=["wxid_user2"],  # someone else, not the bot
+        body="hello team",
+    )
+
+    assert adapter._build_message_event(data) is None
+
+
+def test_build_event_keeps_group_message_when_bot_is_mentioned():
+    adapter = _make_adapter(self_wxid="wxid_bot")
+    data = _make_inbound(
+        senderId="wxid_user1",
+        isGroup=True,
+        mentionedIds=["wxid_bot"],
+        body="@bot help",
+    )
+
+    event = adapter._build_message_event(data)
+
+    assert event is not None
+    assert event.text == "@bot help"
+    assert event.source.chat_type == "group"
+
+
+def test_build_event_keeps_dm_unconditionally():
+    """Group gating must not affect private chats."""
+    adapter = _make_adapter(self_wxid="wxid_bot")
+    data = _make_inbound(
+        chatId="wxid_user1",
+        senderId="wxid_user1",
+        isGroup=False,
+        mentionedIds=[],
+        body="private question",
+    )
+
+    event = adapter._build_message_event(data)
+
+    assert event is not None
+    assert event.source.chat_type == "dm"
+
+
+def test_build_event_skips_gating_when_self_wxid_unset(monkeypatch):
+    """When operators haven't set self_wxid, gating silently no-ops so
+    behavior degrades to allow-through, not crash."""
+    monkeypatch.delenv("WECHAT_SELF_WXID", raising=False)
+    adapter = _make_adapter()
+    data = _make_inbound(
+        senderId="wxid_user1",
+        isGroup=True,
+        mentionedIds=[],
+        body="no self_wxid set",
+    )
+
+    event = adapter._build_message_event(data)
+
+    assert event is not None
