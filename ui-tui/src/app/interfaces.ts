@@ -7,8 +7,6 @@ import type { ImageAttachResponse } from '../gatewayTypes.js'
 import type { RpcResult } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 import type {
-  ActiveTool,
-  ActivityItem,
   ApprovalReq,
   ClarifyReq,
   ConfirmReq,
@@ -16,9 +14,9 @@ import type {
   Msg,
   PanelSection,
   SecretReq,
+  SectionVisibility,
   SessionInfo,
   SlashCatalog,
-  SubagentProgress,
   SudoReq,
   Usage
 } from '../types.js'
@@ -30,8 +28,12 @@ export interface StateSetter<T> {
 export type StatusBarMode = 'bottom' | 'off' | 'top'
 
 export interface SelectionApi {
+  captureScrolledRows: (firstRow: number, lastRow: number, side: 'above' | 'below') => void
   clearSelection: () => void
-  copySelection: () => string
+  copySelection: () => Promise<string>
+  getState: () => unknown
+  shiftAnchor: (dRow: number, minRow: number, maxRow: number) => void
+  shiftSelection: (dRow: number, minRow: number, maxRow: number) => void
 }
 
 export interface CompletionItem {
@@ -85,8 +87,11 @@ export interface UiState {
   busy: boolean
   compact: boolean
   detailsMode: DetailsMode
+  detailsModeCommandOverride: boolean
   info: null | SessionInfo
   inlineDiffs: boolean
+  mouseTracking: boolean
+  sections: SectionVisibility
   showCost: boolean
   showReasoning: boolean
   sid: null | string
@@ -118,7 +123,7 @@ export interface ComposerActions {
   dequeue: () => string | undefined
   enqueue: (text: string) => void
   handleTextPaste: (event: PasteEvent) => MaybePromise<ComposerPasteResult | null>
-  openEditor: () => void
+  openEditor: () => Promise<void>
   pushHistory: (text: string) => void
   replaceQueue: (index: number, text: string) => void
   setCompIdx: StateSetter<number>
@@ -300,21 +305,7 @@ export interface AppLayoutComposerProps {
 }
 
 export interface AppLayoutProgressProps {
-  activity: ActivityItem[]
-  outcome: string
-  reasoning: string
-  reasoningActive: boolean
-  reasoningStreaming: boolean
-  reasoningTokens: number
   showProgressArea: boolean
-  showStreamingArea: boolean
-  streamPendingTools: string[]
-  streamSegments: Msg[]
-  streaming: string
-  subagents: SubagentProgress[]
-  toolTokens: number
-  tools: ActiveTool[]
-  turnTrail: string[]
 }
 
 export interface AppLayoutStatusProps {
