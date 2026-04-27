@@ -431,6 +431,16 @@ class WeChatAdapter(BasePlatformAdapter):
         if not chat_id or not sender_id:
             return None
 
+        # Drop messages the bridge marked as sent by us. Without this, DM
+        # replies from the bot get echoed back through the bridge SSE
+        # stream and the adapter would re-process its own outbound text
+        # as new inbound — bot replies to itself in an infinite loop.
+        # `botIds` below catches the same case in groups when the
+        # operator's wxid is also listed there, but `fromSelf` is the
+        # bridge-authoritative signal and works for DMs too.
+        if data.get("fromSelf"):
+            return None
+
         bot_ids = {str(candidate).strip() for candidate in (data.get("botIds") or []) if str(candidate).strip()}
         if sender_id in bot_ids:
             return None
